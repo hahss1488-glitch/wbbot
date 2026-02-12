@@ -1,0 +1,14 @@
+[project]
+name = "wbbot"
+version = "0.1.0"
+description = "Telegram bot to optimize warehouse coverage speed"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "aiogram>=3.13,<4",
+  "pandas>=2.0,<3",
+  "openpyxl>=3.1,<4"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
