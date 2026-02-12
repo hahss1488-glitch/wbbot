@@ -1,0 +1,28 @@
+name: Deploy to VPS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            mkdir -p /home/ubuntu/wb-bot/config
+            echo "${{ secrets.BOT_TOKEN }}" > /home/ubuntu/wb-bot/config/bot_token.txt
+            docker pull myrepo/wb-bot:latest || true
+            docker stop wb-bot || true
+            docker rm wb-bot || true
+            docker run -d --name wb-bot --restart unless-stopped \
+              -e BOT_TOKEN="${{ secrets.BOT_TOKEN }}" \
+              -v /home/ubuntu/wb-bot/data:/app/data \
+              -v /home/ubuntu/wb-bot/config:/app/config \
+              myrepo/wb-bot:latest

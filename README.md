@@ -1,74 +1,119 @@
-# WB Warehouse Optimizer Bot (MVP)
+# WB Warehouse Optimizer Bot
 
-Telegram-бот, который рекомендует, какой склад добавить следующим, чтобы максимизировать скорость доставки.
+Telegram-бот с кнопочным интерфейсом, который:
+- принимает реальные Excel/CSV файлы со скоростями,
+- считает покрытие и метрики,
+- рекомендует следующий склад для подключения,
+- позволяет управлять активными складами прямо из кнопок.
 
-## Что умеет
-- Загрузка матрицы скоростей (`/upload_speeds`) из CSV/XLSX
-- Загрузка весов продаж (`/upload_sales`) из CSV/XLSX (опционально)
-- Управление активными складами (`/set_active`, `/add_active`)
-- Рекомендации следующего склада (`/recommend_next [N]`)
-- Симуляция конкретного склада (`/simulate_add <id>`)
-- Сводный отчет (`/report`)
-- Экспорт данных (`/export`)
+## 1) Как один раз настроить токен
 
-## Формат входных файлов
-### speeds.csv / speeds.xlsx
-Обязательные колонки:
-- `region_code`
-- `region_name`
-- `warehouse_id`
-- `warehouse_name`
-- `time_hours`
+Бот читает токен в таком порядке:
+1. `BOT_TOKEN` из переменных окружения,
+2. `config/bot_token.txt`,
+3. иначе ошибка `RuntimeError("Bot token not provided...")`.
 
-Правила:
-- `time_hours` > 0
-- пустой `time_hours` трактуется как бесконечность (`+∞`)
-
-### sales.csv / sales.xlsx (опционально)
-Колонки:
-- `region_code`
-- `orders`
-
-Если sales не загружен, бот использует равные веса регионов.
-
-## Метрика
-- `w_r = orders_r / sum_orders` (или равные веса)
-- `best_time_r = min(time_hours)` по активным складам
-- `speed_r = 1 / best_time_r`, если склада нет -> `0`
-- `global_speed = Σ(w_r * speed_r)`
-- `global_speed_optimal` — аналогично, но по всем складам
-- `coverage% = global_speed / global_speed_optimal * 100%`
-
-## Локальный запуск
+### Linux / macOS
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-export BOT_TOKEN=<your_token>
+export BOT_TOKEN=123456:ABCDEF
 python -m bot.main
 ```
 
-## Docker
-```bash
-docker build -t wb-bot .
-docker run --rm -e BOT_TOKEN=$BOT_TOKEN -v $(pwd)/data:/app/data wb-bot
+### Windows PowerShell
+```powershell
+$env:BOT_TOKEN="123456:ABCDEF"
+python -m bot.main
 ```
 
-## VPS quickstart
-1. Поставьте Docker и Git на VPS.
-2. Клонируйте репозиторий.
-3. `docker build -t wb-bot .`
-4. `docker run -d --name wb-bot --restart unless-stopped -e BOT_TOKEN=<TOKEN> -v $(pwd)/data:/app/data wb-bot`
-5. Проверка логов: `docker logs -f wb-bot`
+### Файл (удобно для VPS)
+```bash
+mkdir -p config
+echo "123456:ABCDEF" > config/bot_token.txt
+python -m bot.main
+```
 
-## Команды в Telegram
-- `/upload_speeds`
-- `/upload_sales`
-- `/list_warehouses`
-- `/set_active <id1> <id2> ...`
-- `/add_active <id>`
-- `/recommend_next [N]`
-- `/simulate_add <id>`
-- `/report`
-- `/export`
+### Docker
+```bash
+docker build -t wb-bot .
+docker run -d --name wb-bot --restart unless-stopped \
+  -e BOT_TOKEN="$BOT_TOKEN" \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/config:/app/config \
+  wb-bot
+```
+
+## 2) GitHub Secrets (без ручного редактирования на VPS)
+
+Один раз в репозитории:
+- **Settings → Secrets and variables → Actions → New repository secret**
+- имя: `BOT_TOKEN`
+- значение: токен Telegram-бота
+
+Дальше workflow (`.github/workflows/deploy.yml`) сам передаст токен в docker и запишет его в `config/bot_token.txt` на VPS.
+
+Также добавьте:
+- `VPS_HOST`
+- `VPS_USER`
+- `VPS_SSH_KEY`
+
+## 3) Поддерживаемые форматы speeds
+
+Функция: `parse_speeds_file(filepath)`/`parse_speeds(bytes, filename)`.
+
+### Long format
+Колонки:
+- `region_code`, `region_name`, `warehouse_id`, `warehouse_name`, `time_hours`
+
+### Priority wide format (реальный)
+Колонки вида:
+- `region_name`, `1-й приоритет`, `2-й приоритет`, ...
+- ячейки: `"Склад X, 28 ч"`
+
+### Wide matrix
+- `region_name` + колонки-склады с числовыми значениями времени.
+
+Если формат не распознан — бот вернёт понятную ошибку и превью первых строк.
+
+## 4) Как загрузка работает в Telegram
+
+1. Нажми **«Загрузить скорости»** и отправь файл.
+2. Бот покажет:
+   - определённый формат,
+   - выбранный лист (`result` или первый),
+   - превью 8-10 строк,
+   - проблемные ячейки.
+3. Нажми:
+   - ✅ Подтвердить (сохранить),
+   - ✏️ Выбрать другой лист,
+   - ✏️ Поменять колонку региона,
+   - ❌ Отменить.
+
+## 5) Кнопки меню
+
+- `Загрузить скорости`
+- `Загрузить продажи`
+- `Активные склады`
+- `Рекомендация`
+- `Отчёт`
+- `Экспорт`
+
+## 6) Примеры файлов
+
+Смотри папку `examples/`:
+- `example_long.csv`
+- `example_priority_wide.csv`
+- `example_wide_matrix.csv`
+
+## 7) Метрика
+
+- `w_r = orders_r / sum_orders` (или равные веса)
+- `speed_r = 1 / best_time_r`, если нет активного склада → `0`
+- `global_speed = Σ(w_r * speed_r)`
+- `coverage = global_speed / global_speed_optimal`
+
+В рекомендации бот показывает:
+- coverage,
+- текущий `global_speed`,
+- альтернативу `avg_time`,
+- лучший склад, прирост в абсолюте и %,
+- изменения по регионам (`old -> new`, дельта, вес).

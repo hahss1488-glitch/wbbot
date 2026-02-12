@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,40 +8,44 @@ from pathlib import Path
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS warehouses (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
+    warehouse_id TEXT PRIMARY KEY,
+    warehouse_name TEXT NOT NULL,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS regions (
-    code TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+    region_code TEXT PRIMARY KEY,
+    region_name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speeds (
     region_code TEXT NOT NULL,
-    warehouse_id INTEGER NOT NULL,
+    warehouse_id TEXT NOT NULL,
     time_hours REAL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (region_code, warehouse_id),
-    FOREIGN KEY (region_code) REFERENCES regions(code),
-    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+    FOREIGN KEY (region_code) REFERENCES regions(region_code),
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(warehouse_id)
 );
 
 CREATE TABLE IF NOT EXISTS sales (
     region_code TEXT PRIMARY KEY,
-    orders REAL NOT NULL,
-    FOREIGN KEY (region_code) REFERENCES regions(code)
+    orders_int INTEGER NOT NULL,
+    FOREIGN KEY (region_code) REFERENCES regions(region_code)
 );
 
 CREATE TABLE IF NOT EXISTS active_warehouses (
-    warehouse_id INTEGER PRIMARY KEY,
-    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+    warehouse_id TEXT PRIMARY KEY,
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(warehouse_id)
 );
 
 CREATE TABLE IF NOT EXISTS uploads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind TEXT NOT NULL,
     filename TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    filepath TEXT NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    user TEXT
 );
 """
 
@@ -70,42 +75,46 @@ class Database:
         finally:
             conn.close()
 
-    def add_upload(self, kind: str, filename: str) -> None:
+    def add_upload(self, filename: str, filepath: str, user: str | None) -> None:
         with self.tx() as conn:
             conn.execute(
-                "INSERT INTO uploads (kind, filename) VALUES (?, ?)",
-                (kind, filename),
+                "INSERT INTO uploads (filename, filepath, user) VALUES (?, ?, ?)",
+                (filename, filepath, user),
             )
 
-    def replace_speeds(self, records: list[dict]) -> None:
+    def upsert_speeds(self, records: list[dict]) -> None:
         with self.tx() as conn:
-            conn.execute("DELETE FROM speeds")
-            conn.execute("DELETE FROM regions")
-            conn.execute("DELETE FROM warehouses")
             for rec in records:
                 conn.execute(
-                    "INSERT OR IGNORE INTO regions (code, name) VALUES (?, ?)",
+                    """
+                    INSERT INTO regions(region_code, region_name) VALUES (?, ?)
+                    ON CONFLICT(region_code) DO UPDATE SET region_name=excluded.region_name
+                    """,
                     (rec["region_code"], rec["region_name"]),
                 )
                 conn.execute(
-                    "INSERT OR IGNORE INTO warehouses (id, name) VALUES (?, ?)",
-                    (rec["warehouse_id"], rec["warehouse_name"]),
+                    """
+                    INSERT INTO warehouses(warehouse_id, warehouse_name, aliases_json) VALUES (?, ?, ?)
+                    ON CONFLICT(warehouse_id) DO UPDATE SET warehouse_name=excluded.warehouse_name
+                    """,
+                    (rec["warehouse_id"], rec["warehouse_name"], json.dumps([rec["warehouse_name"]], ensure_ascii=False)),
                 )
                 conn.execute(
-                    "INSERT INTO speeds (region_code, warehouse_id, time_hours) VALUES (?, ?, ?)",
+                    """
+                    INSERT INTO speeds(region_code, warehouse_id, time_hours, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(region_code, warehouse_id) DO UPDATE
+                    SET time_hours=excluded.time_hours, updated_at=CURRENT_TIMESTAMP
+                    """,
                     (rec["region_code"], rec["warehouse_id"], rec["time_hours"]),
                 )
-            # clear active warehouses no longer valid
-            conn.execute(
-                "DELETE FROM active_warehouses WHERE warehouse_id NOT IN (SELECT id FROM warehouses)"
-            )
 
     def replace_sales(self, records: list[dict]) -> None:
         with self.tx() as conn:
             conn.execute("DELETE FROM sales")
             for rec in records:
                 conn.execute(
-                    "INSERT INTO sales (region_code, orders) VALUES (?, ?)",
+                    "INSERT INTO sales(region_code, orders_int) VALUES (?, ?)",
                     (rec["region_code"], rec["orders"]),
                 )
 
@@ -113,48 +122,48 @@ class Database:
         with self._connect() as conn:
             return conn.execute(
                 """
-                SELECT w.id, w.name,
-                CASE WHEN aw.warehouse_id IS NULL THEN 0 ELSE 1 END AS active
+                SELECT w.warehouse_id, w.warehouse_name,
+                       CASE WHEN aw.warehouse_id IS NULL THEN 0 ELSE 1 END AS active
                 FROM warehouses w
-                LEFT JOIN active_warehouses aw ON aw.warehouse_id = w.id
-                ORDER BY w.id
+                LEFT JOIN active_warehouses aw ON aw.warehouse_id = w.warehouse_id
+                ORDER BY w.warehouse_name
                 """
             ).fetchall()
 
-    def set_active(self, ids: list[int]) -> None:
+    def set_active(self, ids: list[str]) -> None:
         with self.tx() as conn:
             conn.execute("DELETE FROM active_warehouses")
             for w_id in ids:
-                conn.execute(
-                    "INSERT OR IGNORE INTO active_warehouses (warehouse_id) VALUES (?)", (w_id,)
-                )
+                conn.execute("INSERT OR IGNORE INTO active_warehouses (warehouse_id) VALUES (?)", (w_id,))
 
-    def add_active(self, w_id: int) -> None:
+    def add_active(self, w_id: str) -> None:
         with self.tx() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO active_warehouses (warehouse_id) VALUES (?)", (w_id,)
-            )
+            conn.execute("INSERT OR IGNORE INTO active_warehouses (warehouse_id) VALUES (?)", (w_id,))
 
-    def active_ids(self) -> set[int]:
+    def remove_active(self, w_id: str) -> None:
+        with self.tx() as conn:
+            conn.execute("DELETE FROM active_warehouses WHERE warehouse_id=?", (w_id,))
+
+    def active_ids(self) -> set[str]:
         with self._connect() as conn:
             rows = conn.execute("SELECT warehouse_id FROM active_warehouses").fetchall()
-        return {int(r[0]) for r in rows}
+        return {str(r[0]) for r in rows}
 
     def speeds_rows(self) -> list[sqlite3.Row]:
         with self._connect() as conn:
             return conn.execute(
                 """
-                SELECT s.region_code, r.name as region_name, s.warehouse_id,
-                       w.name as warehouse_name, s.time_hours
+                SELECT s.region_code, r.region_name, s.warehouse_id,
+                       w.warehouse_name, s.time_hours
                 FROM speeds s
-                JOIN regions r ON r.code = s.region_code
-                JOIN warehouses w ON w.id = s.warehouse_id
+                JOIN regions r ON r.region_code = s.region_code
+                JOIN warehouses w ON w.warehouse_id = s.warehouse_id
                 """
             ).fetchall()
 
     def sales_rows(self) -> list[sqlite3.Row]:
         with self._connect() as conn:
-            return conn.execute("SELECT region_code, orders FROM sales").fetchall()
+            return conn.execute("SELECT region_code, orders_int AS orders FROM sales").fetchall()
 
     def has_data(self) -> bool:
         with self._connect() as conn:

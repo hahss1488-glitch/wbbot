@@ -1,0 +1,5 @@
+region_code,region_name,warehouse_id,warehouse_name,time_hours
+moskva,Москва,koledino,Коледино,28
+moskva,Москва,aleksin,Алексин,31.6
+spb,Санкт-Петербург,koledino,Коледино,35
+spb,Санкт-Петербург,aleksin,Алексин,30
