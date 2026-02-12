@@ -1,1 +1,0 @@
-"""Wildberries report Telegram bot."""
